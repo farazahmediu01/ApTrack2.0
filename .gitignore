@@ -1,0 +1,43 @@
+# =====================================================================
+# SECRETS - never commit
+# =====================================================================
+.env
+.env.*
+!.env.example
+*.env
+!.example.env
+.example.env
+
+# =====================================================================
+# STUDENT PERSONAL DATA - never commit
+# This repository has a GitHub remote. Real student names, enrollment
+# IDs and attendance histories must not leave this machine.
+# If a fixture is needed for tests, anonymise it first and commit the
+# anonymised copy under tests/fixtures/anon/.
+# =====================================================================
+tests/fixtures/*.json
+!tests/fixtures/anon/
+*.xlsx
+*.xls
+images/
+
+# =====================================================================
+# Working notes - scratch, and some have contained live tokens
+# =====================================================================
+prompt*.md
+prompt*.txt
+promt*.md
+claude-response-*.md
+questions-before-spec*.md
+step_*.md
+session_id.*
+
+# =====================================================================
+# Tooling
+# =====================================================================
+~$*
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
