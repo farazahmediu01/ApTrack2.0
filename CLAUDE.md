@@ -143,6 +143,20 @@ This is also the resume mechanism, and it measures exactly what management audit
 than their `P` count, mark nothing for that student and report it. Shuffling books
 and sessions within a term is fine; shuffling terms is forbidden.
 
+**Hard cap: 14 sessions per student per month.** Never mark more, under any
+circumstance. If a student's `P` count exceeds 14, mark nothing for that student and
+report it — the teacher handles the exception manually. This is both a business rule
+and the blast-radius guard: it bounds what any bug can do to one student's record.
+
+**Known anomaly, unresolved.** One test mark is stuck in production: `SessionId
+184616` (`EP-HADOOP-21_Session01`), dated Sunday 2 Aug 2026 — not a class day. The
+portal's Modify Attendance screen cannot currently locate it; filtering by session id
+returns nothing. The idempotency guard in §5 absorbs it (the student gets one fewer
+session marked in August, so the monthly *count* still reconciles), but the
+session-to-date pairing for that student is wrong. Revisit when the script can unmark
+via the API — worth testing whether `HasAttended: false` on the save endpoint works as
+a programmatic undo, which would also give us a rollback path.
+
 ---
 
 ## 6. Student data — non-negotiable
