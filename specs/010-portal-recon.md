@@ -141,7 +141,7 @@ Dashboard
 GET /apigateway/api/batchmanagement/GetCentreWiseStudentFilter
     ?centreMapId=4985
     &type=1
-    &searchValue=Student1498175
+    &searchValue=StudentAAAAAAA
 ```
 
 | Param | Meaning |
@@ -152,7 +152,7 @@ GET /apigateway/api/batchmanagement/GetCentreWiseStudentFilter
 
 Returns the row shown in the UI, from which the four internal IDs are derived.
 
-**Why this hop exists:** the Excel holds `Student1498175`, but the write API needs numeric internal IDs. They are not the same thing.
+**Why this hop exists:** the Excel holds `StudentAAAAAAA`, but the write API needs numeric internal IDs. They are not the same thing.
 
 ### 5.2 Read full attendance state
 
@@ -218,7 +218,7 @@ Content-Type: application/json
   "BatchId": 60328,
   "IsRegularBatch": true,
   "StudentDetailId": 1450630,
-  "StudentId": "Student1498175",
+  "StudentId": "StudentAAAAAAA",
   "StudentName": "MUHAMMAD ALI",
   "LoggedInRoleCode": "FAC",
   "CourseId": 9432,
