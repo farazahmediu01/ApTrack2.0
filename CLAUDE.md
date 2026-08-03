@@ -104,8 +104,21 @@ boundary it lands in the previous *month*, which is the unit management audits.
 Always send `YYYY-MM-DDT07:00:00.000Z`. Confirmed: picked 30 Jul, stored 29 Jul.
 
 **Gateway tokens live ~15 minutes.** The 30-day JWT in the `signalR` URL is a
-notification token and the gateway rejects it. A hand-pasted token is fine for a
-spike and useless for a real run — token refresh is on the critical path.
+notification token and the gateway rejects it.
+
+Both tokens live in **Session Storage** (not Local Storage) for
+`https://aptrackglobal.com`, under the keys `token` (gateway) and `tokenSignalr`
+(notifications). Quickest way to grab one: DevTools Console → `sessionStorage.token`.
+
+**Token refresh is deliberately NOT being built for v1.** There is no refresh token in
+session storage, local storage, or any readable cookie — the only httpOnly cookie is
+`idp_init_client_id`, an IdP bootstrap value. The refresh URL carries `code=null`,
+which points at OIDC silent renew against the identity provider's own session cookie.
+Replicating that from Python means writing an OIDC client: a real sub-project.
+
+It isn't needed. Count the requests: ~100 students × (1 read + 1 bulk write) ≈ 200
+calls ≈ one minute of wall clock. That fits inside a 15-minute token many times over.
+Paste one token, run, done. Revisit only if a run ever approaches the window.
 
 **Field names differ between endpoints.** Do not "fix" these; parsing depends on them.
 
