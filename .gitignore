@@ -41,3 +41,11 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# Portal response cache (student attendance = personal data)
+.cache/
+tests/fixtures/cache/
+
+# Working notes directory - has contained live JWTs and student records
+prompts/
+data/
