@@ -135,31 +135,54 @@ Paste one token, run, done. Revisit only if a run ever approaches the window.
 its payload in `{"StatusCode":…, "Item":…}`.
 
 **The portal stores presence only.** There is no "absent" record. Unmarking returns a
-session to pending. So in the sheet, `A` and `H` both mean simply *do not mark* —
-count the `P`s and nothing else.
+session to pending. So in the sheet, `A`, `L` and `H` all mean simply *do not mark*.
 
-**Idempotency is NOT free here.** Session identity can't be double-marked, but the
-algorithm's input is a *count*, so a second run would mark N more sessions. The guard:
+**THE AUDIT COUNTS DISTINCT DATES, NOT SESSIONS.** *(Confirmed 2026-09-21 against
+management's own SAR report: 106 of 106 students matched on distinct dates, 0 on
+session counts.)* Two sessions on one date count once. So the unit of work is the
+date, and the idempotency guard is a set difference, not a subtraction:
 
 ```
-already  = sessions in <term> whose AttendanceMarkedOnDate falls in <month>
-to_mark  = count_of_P_in_row - already
+want  = class dates the sheet marks P or O
+have  = distinct dates already marked in <month>, across EVERY enrollment
+todo  = want - have          -> mark one pending session ON EACH of these dates
 ```
 
-This is also the resume mechanism, and it measures exactly what management audits.
+This is idempotent, it is the resume mechanism, it self-repairs a month that has
+duplicate dates, and it measures exactly what management audits. A count-based
+version shipped first and silently cost 24 students 75 audited days.
+
+**A student can have several enrollments.** 521 of the centre's 12,647 do. Each has
+its own `StudentCourseMapId`, `CourseId`, `BatchId` and its own term list — the row
+labelled `ADSE-DIRECT-FROM-TERM 5` holds T5+T6, the row labelled `HDSE` holds T1–T4
+and the SBTE block. `GetCentreWiseStudentFilter` returns them all; taking `rows[0]`
+picked the wrong one six times out of six. **Pick by term content, never by label**
+(`src/enrollment.py`). The audit view (`have`) spans all enrollments; writes go to
+the one that contains the term being marked.
+
+**The save endpoint lies about locked sessions.** A session whose term already has a
+generated transcript returns HTTP 200 and then does not persist. Only a re-read
+proves a mark landed. 76 such refusals in one month, clustered in T1–T3. Verify
+every write; blacklist what did not land and retry the SAME DATE with the next
+candidate session.
 
 **Ordering.** Sort sessions by the numeric suffix of `SessionName`, never by
 `SessionId` and never as a string. Book order is a configured sequence keyed on
 `ModuleCode` — teaching order does not match ModuleId order.
 
-**Never cross a term boundary.** If a student has fewer pending sessions in the term
-than their `P` count, mark nothing for that student and report it. Shuffling books
-and sessions within a term is fine; shuffling terms is forbidden.
+**Term boundaries MAY be crossed.** *(Reversed 2026-08-31 after management confirmed
+they count dates, not terms.)* Order: current term, then earlier terms ascending, then
+later ones. SBTE (`OV-7066-T5`, anything named SBTE) is never marked — separate CPC,
+separate script, later.
 
-**Hard cap: 14 sessions per student per month.** Never mark more, under any
-circumstance. If a student's `P` count exceeds 14, mark nothing for that student and
-report it — the teacher handles the exception manually. This is both a business rule
-and the blast-radius guard: it bounds what any bug can do to one student's record.
+**Term End Examination and Term-N-KIT sessions ARE marked.** They were excluded for
+one day on the theory that they are not classes; faculty corrected that. Two per
+term, ordered after the term's books.
+
+**Hard cap: 14 DISTINCT DATES per student per month.** Not 14 sessions. A month has
+at most 14 class days, so marking one session per class date satisfies it by
+construction. Backfills honour it by never reusing a date the student already has
+and by walking further back once a month holds 14.
 
 **Known anomaly, unresolved.** One test mark is stuck in production: `SessionId
 184616` (`EP-HADOOP-21_Session01`), dated Sunday 2 Aug 2026 — not a class day. The

@@ -17,8 +17,10 @@
 Management issues a Google Sheet each month, one tab per faculty, with `P`/`O`/`A`/`L`/`H`
 codes per student per class date. We read it and mark the matching number of sessions
 in the ApTrack portal, then verify the portal's monthly count matches the sheet's.
-**What management audits is a count per student per term-month** — not which specific
-session was marked.
+**What management audits is the number of DISTINCT DATES per student per month** — not
+how many sessions, not which sessions, not which term or enrollment carried them.
+`[OBSERVED 2026-09-21: management's SAR report matched 106/106 students on distinct
+dates and 0 on session counts.]`
 
 ---
 
@@ -42,8 +44,9 @@ them. `[OBSERVED]`
 
 Compare codes case-insensitively and strip whitespace.
 
-**The output of parsing a student's row is a count**, per term (§4). Which dates the
-codes fell on does not survive into the marking step (§5 explains why).
+**The output of parsing a student's row is the LIST OF DATES** marked `P` or `O`. Each
+of those dates needs exactly one session marked on it. The dates survive all the way
+into the write — they are the unit the audit counts (§5).
 
 Blanks are meaningful as a signal even though they are not marked: a run of leading
 blanks means a late joiner. One such student appears in the July roster.
@@ -309,31 +312,35 @@ their next session marked in week 2 — the backlog rolls forward. This is right
 because management counts *how many* sessions were marked in the term-month, not
 *which*. Do not "fix" it.
 
-### Idempotency is NOT free
-
-Session identity cannot be double-marked, but the algorithm's input is a **count** —
-so a naive second run marks N *more* sessions. Always compute the delta:
+### The unit is the date — idempotency is a set difference
 
 ```
-already = sessions in <term> whose AttendanceMarkedOnDate falls in <month>
-to_mark = count_of_valid_codes_in_term - already
+want = class dates the sheet marks P or O
+have = distinct dates already marked in the month, across EVERY enrollment
+todo = want - have        -> one pending session marked ON each of these dates
 ```
 
-`to_mark <= 0` means nothing to do. This doubles as the resume mechanism and measures
-exactly the number management audits. `[OBSERVED]`
+`todo` empty means nothing to do. This is the resume mechanism, and it **self-repairs**:
+a month that ended up with two sessions on one date and none on another gets the
+missing date filled on the next run. `[OBSERVED]`
 
-### Hard cap: 14 sessions per student per month
+A count-based version (`sheet_count - portal_session_count`) shipped first. When a
+locked session was replaced, the replacement was dated onto an already-used date; the
+count came out right and the audit came out short. **24 students lost 75 audited days**
+before the SAR report exposed it. Never go back to counts.
 
-**Never mark more than 14, under any circumstance.** If a student's valid-code count
-exceeds 14, **mark nothing for that student and report them** — the teacher handles
-the exception manually.
+**Locked replacements keep the date.** The date is what is audited; the session is
+interchangeable. Swap the session, never the date.
 
-This is both a business rule and the blast-radius guard: it bounds what any bug can do
-to one student's record. Apply it to the *count from the sheet*, before the delta.
+### Hard cap: 14 DISTINCT DATES per student per month
 
-A 14-date block plus a perfect attendance row lands exactly on the cap, so the cap
-is live in normal data, not just in error cases: nine students hit exactly 14 in July.
-`[OBSERVED]`
+`[OBSERVED — faculty, 2026-09-21: the cap is on days, not sessions.]` A month has at
+most 14 class days, so one-session-per-class-date satisfies it by construction. More
+than 14 *sessions* in a month is allowed and happens (a repaired month may hold 18
+sessions on 13 dates); more than 14 *dates* is not.
+
+If a sheet row carries more than 14 `P`/`O` dates, hold the student and report — the
+teacher handles the exception manually.
 
 ### The holiday / boundary interaction
 
@@ -403,20 +410,43 @@ Budget for it: give the replacement loop enough rounds that one run finishes
 (`MAX_REPLACEMENT_ROUNDS = 10`). A student deep in the backlog can burn several rounds
 before landing a markable session.
 
-### Exams and kits are not classes
+### Exams and kits ARE marked
 
 Every term carries a `Term End Examination` (`OV-…-EXAM-…`) and a `Term N-KIT`
-(`OV-…KIT…`). They appear in `SessionDetails` and are pending, but they are not
-classes and must never be marked as attendance. `[OBSERVED]`
+(`OV-…KIT…`). **Both are valid sessions and must be marked** — two per term.
+`[OBSERVED — faculty, 2026-09-21]`
 
-The principled test is the CPC: **if a curriculum is loaded and it does not contain
-the module, do not mark it.** Exams and kits are absent from the CPC; every real book
-is present. Match on the portal's `ModuleName`, which spells books exactly as the
-CPC's `Subjects` column does.
+They were excluded for one day (2026-08-31) on the theory that they are not classes,
+using "absent from the CPC" as the test. That theory was wrong. The CPC now decides
+only *order* (exams and kits sort after the term's books, kit before exam), never
+eligibility. The only exclusion is SBTE.
 
 ---
 
-## 8. Enrollment status — report it, never act on it
+## 8. One student, several enrollments
+
+**521 of the centre's 12,647 students have more than one enrollment row**, each with
+its own `StudentCourseMapId`, `CourseId`, `BatchId` — and its own term list.
+`[OBSERVED]` The labels are misleading:
+
+| Course label | Family | Actually holds |
+|---|---|---|
+| `ADSE-DIRECT-FROM-TERM 5` | `OV-ACCP Prime-7062-ACE` | **T5 + T6** (MERN, Big Data) |
+| `HDSE` | `OV-7066-ACCP Prime-SBTE-ACE` | T1–T4 standard + T5 = SBTE block |
+
+`GetCentreWiseStudentFilter` returns every row. Taking `rows[0]` returned the HDSE row
+six times out of six, so a T6 backfill found nothing and 51 August marks landed in
+the HDSE enrollment. (They still counted for the audit — it is per student — but the
+backfill was blocked.)
+
+**Rule: pick the enrollment by term content, never by label.** Fetch all, choose the
+one that contains the term being marked; tie-break on markable pending sessions in
+scope so an SBTE-only T5 never beats a real T5. `src/enrollment.py` owns this.
+
+**Two views of one student:** writes go to the chosen enrollment; the audit view
+(`have`, the dates already marked) spans **all** of them.
+
+## 9. Enrollment status — report it, never act on it
 
 `Item.Status` is usually `Enrolled`. Twelve students across the six August batches
 read **`FDO`** (Financial Drop Out). `[OBSERVED]`
@@ -427,7 +457,7 @@ their attendance. Silencing twelve real students is far worse than marking a gen
 dropped one. Show the status as a tag beside the row; leave the decision to the
 teacher.
 
-## 9. The report's `Employee Name` column is not the writer
+## 10. The report's `Employee Name` column is not the writer
 
 Management's downloadable Student Attendance Report carries an `Employee Name` column.
 It is **a function of `SessionName`, not of who recorded the attendance** — across 67
@@ -449,7 +479,34 @@ and absent from the downloaded report. `FDO` is **not** the explanation — anot
 student in the same batch appears normally. Course, batch id and term all look
 ordinary. `[OBSERVED — unresolved]` Re-check when the next monthly report is pulled.
 
-## 10. Open questions
+## 11. Backfilling a whole book or semester
+
+Separate from the monthly flow. `mark.py` reads the sheet and writes one month's
+delta; `backfill.py` writes **every** pending session inside a named scope for one
+student. The need arises at semesters 5 and 6, where a student's earlier record was
+never filled in.
+
+Two things make it non-trivial, and both are handled inside the tool:
+
+**Dates.** There is no sheet to take them from, and `DeliveryPatternName` is **empty**
+in every portal record checked. `[OBSERVED]` The class-day pattern is instead detected
+from the student's own **recent** marks — only the last ~40, because a student who
+changed batch carries two patterns in their full history and it is the current one
+that matters. Dates then walk backwards from today across those weekdays, oldest
+session getting the oldest date.
+
+**No date is ever reused, and the cap is on distinct dates.** A backfill that lands a
+session on a date the student already has adds nothing to the audit. The first version
+did exactly that — one 40-session backfill collided with 18 existing dates. Now the
+walk skips any date the student already holds in *any* enrollment, and skips a month
+once it holds 14 distinct dates. A 68-session backfill lands across roughly five
+months at ~13 each, which is what the semester looked like anyway.
+
+**Locked sessions keep their date.** A refused session is swapped for the next
+in-scope session on the *same* date. If the scope runs out, the date is left unfilled
+and reported.
+
+## 12. Open questions
 
 - **What identifies a locked session before writing?** (§7)
 - **The SBTE CPC for 7066 terms 5–6.**

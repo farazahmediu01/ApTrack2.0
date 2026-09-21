@@ -244,30 +244,23 @@ EXCLUDED_TERM_CODES = {"OV-7066-T5"}
 
 def is_excluded(session, cur=None) -> bool:
     """
-    True for anything this script must never mark.
+    True only for SBTE. Nothing else is excluded.
 
-    Two kinds:
-      1. SBTE terms - out of scope (see above).
-      2. Non-class sessions. Every term carries a 'Term End Examination'
-         (OV-....-EXAM-..) and a 'Term N-KIT' (OV-....KIT..). They are sessions
-         in the portal but they are not classes, and marking them as attended
-         is simply wrong data. They are also absent from the CPC, which is the
-         principled test: if a curriculum is loaded and it does not know the
-         module, do not mark it.
+    Term End Examination and Term-N-KIT sessions WERE excluded here for one
+    day (2026-08-31) on the theory that they are not classes. Faculty
+    corrected that on 2026-09-21: they are valid sessions that must be marked,
+    two per term. The `cur` parameter is kept so callers need not change; the
+    CPC now only affects ORDER (exams and kits sort after the books), never
+    eligibility.
     """
     code = (session.get("TermCode") or "").upper()
     name = (session.get("TermName") or "").upper()
-    if code in EXCLUDED_TERM_CODES or "SBTE" in code or "SBTE" in name:
-        return True
+    return code in EXCLUDED_TERM_CODES or "SBTE" in code or "SBTE" in name
 
+
+def is_exam_or_kit(session) -> bool:
     mod = (session.get("ModuleCode") or "").upper()
-    mod_name = (session.get("ModuleName") or "").upper()
-    if "EXAM" in mod or "KIT" in mod or "EXAMINATION" in mod_name or "-KIT" in mod_name:
-        return True
-
-    if cur is not None and cur.order_of(session.get("ModuleName")) is None:
-        return True
-    return False
+    return "EXAM" in mod or "KIT" in mod
 
 
 def select_sessions(sessions, start_term_no, book_order, n, cur=None):
@@ -300,6 +293,9 @@ def select_sessions(sessions, start_term_no, book_order, n, cur=None):
     hist = {code.upper(): i for i, code in enumerate(book_order or [])}
 
     def rank_of(sess):
+        # exams and kits come after every book in the term, kit before exam
+        if is_exam_or_kit(sess):
+            return (2, 0 if "KIT" in (sess.get("ModuleCode") or "").upper() else 1)
         if cur is not None:
             pos = cur.order_of(sess.get("ModuleName"))
             if pos is not None:

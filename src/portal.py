@@ -196,14 +196,22 @@ class Portal:
             "batchId": pick("RegularBatchId", "BatchId"),
         }
 
-    def find_student(self, enrollment_id: str) -> dict:
+    def find_enrollments(self, enrollment_id: str) -> list[dict]:
         """
-        Resolve the internal id chain for one enrollment id.
+        EVERY enrollment for one student, as id-chain dicts.
+
+        A student can be enrolled more than once - 521 of the centre's 12,647
+        are. A student on ADSE-DIRECT-FROM-TERM 5 also carries an HDSE row from
+        the same batch, and an SBTE student carries a separate SBTE row. Each
+        row has its own StudentCourseMapId / CourseId / BatchId and its OWN
+        term list: the ADSE row holds T5+T6, the HDSE row holds T1-T4 (+SBTE).
+
+        Taking rows[0] silently picked the HDSE row every time, which is why a
+        T6 backfill found nothing and why 51 August marks landed in the wrong
+        enrollment. Return them all; the caller chooses by term content.
 
         NOTE this endpoint returns a BARE LIST, unlike every other endpoint
-        which wraps its payload in {"StatusCode":..., "Item":...}. It also uses
-        different field names for the same values: RegularBatchId / CourseMapId
-        here, BatchId / StudentCourseMapId everywhere else.
+        which wraps its payload in {"StatusCode":..., "Item":...}.
         """
         found = self._get("batchmanagement/GetCentreWiseStudentFilter",
                           centreMapId=CENTRE_MAP_ID, type=1, searchValue=enrollment_id)
@@ -211,31 +219,33 @@ class Portal:
             found.get("Item") or found.get("Items") or [])
         if isinstance(rows, dict):
             rows = [rows]
-        exact = [r for r in rows
-                 if str(r.get("StudentId", "")).strip().lower() == enrollment_id.strip().lower()]
+        want = enrollment_id.strip().lower()
+        exact = [r for r in rows if str(r.get("StudentId", "")).strip().lower() == want]
         rows = exact or rows
         if not rows:
             raise PortalError(f"no student matched {enrollment_id}")
-        row = rows[0]
+        out, seen = [], set()
+        for r in rows:
+            ids = self.ids_from_row(r)
+            key = ids["studentCourseMapId"]
+            if key in seen:
+                continue
+            seen.add(key)
+            ids["_course"] = r.get("Course")
+            ids["_batch"] = r.get("BatchName")
+            out.append(ids)
+        return out
 
-        def pick(*names):
-            for n in names:
-                for k, v in row.items():
-                    if k.lower() == n.lower():
-                        return v
-            raise PortalError(f"none of {names} in filter response; keys={list(row)}")
-
-        return {
-            "studentDetailId": pick("StudentDetailId"),
-            "studentCourseMapId": pick("CourseMapId", "StudentCourseMapId"),
-            "courseId": pick("CourseId"),
-            "batchId": pick("RegularBatchId", "BatchId"),
-        }
+    def find_student(self, enrollment_id: str) -> dict:
+        """First enrollment only. Kept for the spike; new code uses
+        find_enrollments() and picks by term content."""
+        return self.find_enrollments(enrollment_id)[0]
 
     def attendance(self, ids: dict) -> dict:
-        """Full per-session attendance state for one student."""
+        """Full per-session attendance state for ONE enrollment."""
+        params = {k: v for k, v in ids.items() if not k.startswith("_")}
         return self._get("batchmanagement/GetCentreWiseStudentMarkAttendance",
-                         IsLoginRole="FAC", **ids)
+                         IsLoginRole="FAC", **params)
 
     # ---- write path -------------------------------------------------------
 

@@ -49,3 +49,8 @@ tests/fixtures/cache/
 # Working notes directory - has contained live JWTs and student records
 prompts/
 data/
+
+# Terminal captures and scratch notes - contain student names and ids
+outputs/
+tests/*.txt
+gemini-chat.txt

@@ -6,7 +6,7 @@ against what the sheet says, and report the delta that still needs marking.
 
     python reconcile.py                     # all batches
     python reconcile.py --batch 6           # one batch
-    python reconcile.py --names             # unmask ids and names
+    python reconcile.py --mask              # hide ids and names
     python reconcile.py --refresh           # ignore the on-disk cache
 
 This script has NO write path. It cannot mark attendance. Responses are cached
@@ -25,7 +25,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from src import cpc, planner, portal, roster
+from src import cpc, enrollment, planner, portal, roster
 
 ROOT = Path(__file__).resolve().parent
 CACHE = ROOT / ".cache"
@@ -98,26 +98,8 @@ def current_term(sessions, fallback):
 
 
 def cached(enrollment_id):
-    f = CACHE / f"{enrollment_id}.json"
-    if f.exists():
-        try:
-            return json.loads(f.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return None
-    return None
-
-
-def fetch(p, enrollment_id, refresh=False):
-    CACHE.mkdir(exist_ok=True)
-    if not refresh:
-        hit = cached(enrollment_id)
-        if hit:
-            return hit
-    ids = p.find_student(enrollment_id)
-    att = p.attendance(ids)
-    blob = {"ids": ids, "att": att}
-    (CACHE / f"{enrollment_id}.json").write_text(json.dumps(blob), encoding="utf-8")
-    return blob
+    """Kept for callers that only need to know whether a record exists."""
+    return (CACHE / f"{enrollment_id}.json").exists() or None
 
 
 def prefetch(p, ids, refresh, workers=8):
@@ -140,7 +122,7 @@ def prefetch(p, ids, refresh, workers=8):
 
     def one(sid):
         try:
-            fetch(p, sid, refresh)
+            enrollment.load(p, sid, CACHE, refresh)   # ALL enrollments, not rows[0]
             return sid, None
         except Exception as e:
             return sid, e
@@ -212,7 +194,7 @@ def main():
         for n in pl.notes:
             print(f"  ! {n}")
         print("=" * 92)
-        print(f"  {'Student':<15} {'Name':<22} {'sheet':>5} {'portal':>6} {'delta':>5} "
+        print(f"  {'Student':<15} {'Name':<22} {'want':>5} {'have':>5} {'todo':>5} "
               f"{'avail':>5}  {'plan'}")
         print("  " + "-" * 88)
 
@@ -229,68 +211,75 @@ def main():
                 continue
 
             try:
-                blob = cached(sp.student_id) if p is None else fetch(p, sp.student_id)
-                if blob is None:
-                    raise RuntimeError("not in cache (re-run without --offline)")
+                recs = enrollment.load(p, sp.student_id, CACHE, refresh=args.refresh)
             except Exception as e:
-                print(f"  {sid:<15} {nm:<22} {sp.want:>5} {'ERR':>6} {'-':>5} {'-':>5}  {e}")
+                print(f"  {sid:<15} {nm:<22} {sp.want:>5} {'ERR':>5} {'-':>5} {'-':>5}  {e}")
                 problems.append((sp.student_id, f"portal read failed: {e}"))
                 grand["error"] += 1
                 continue
 
-            item, batch_row, sessions, terms = portal.unwrap(blob["att"])
+            cur = curricula.get(pl.course)
+            st = next(x for x in b.students if x.student_id == sp.student_id)
 
-            tag = planner.enrollment_note(item)
+            # The audit counts DISTINCT DATES per student per month, across
+            # every enrollment. That is the only comparison that matters.
+            want = [d for c, d in zip(st.marks, b.dates) if c in planner.VALID_CODES]
+            have = enrollment.marked_dates(recs, year, month)
+            todo = [d for d in want if d.isoformat() not in have]
+
+            rec, why = enrollment.pick(recs, term=pl.start_term, cur=cur)
+            if rec is None:
+                rec, why = enrollment.pick(recs, cur=cur)
+            item, batch_row, sessions, _ = portal.unwrap(rec["att"]) if rec else (
+                {}, {}, [], [])
+
+            tag = planner.enrollment_note(item) if item else None
             if tag:
                 grand["oddstatus"] += 1
+            if len(recs) > 1:
+                grand["multi"] += 1
 
-            already = sum(1 for s in sessions
-                          if s.get("IsPresent") and portal.in_month(
-                              s.get("AttendenceDate"), year, month))
-            cur = curricula.get(pl.course)
             avail = sum(1 for s in sessions
                         if not s.get("IsPresent") and not planner.is_excluded(s, cur))
-            sbte = sum(1 for s in sessions
-                       if not s.get("IsPresent") and planner.is_excluded(s))
-            delta = max(0, sp.capped - already)
 
             term_now, term_src = current_term(sessions, pl.start_term)
-            chosen, short = planner.select_sessions(
-                sessions, term_now, book_order_from_history(sessions), delta, cur)
             if term_src == "history" and pl.start_term and term_now != pl.start_term:
                 grand["offterm"] += 1
 
             note = ""
-            if already > sp.capped:
-                note = f"OVER: portal has {already}, sheet says {sp.capped}"
-                problems.append((sp.student_id, note))
-                grand["over"] += 1
-            elif delta == 0:
-                note = "up to date"
-                grand["uptodate"] += 1
-            elif short:
-                note = f"SHORT {short} - only {avail} pending across all terms"
-                problems.append((sp.student_id, note))
-                grand["short"] += 1
+            if len(want) > planner.MONTHLY_CAP:
+                note = f"HOLD: {len(want)} class dates exceeds cap"
+                problems.append((sp.student_id, note)); grand["hold"] += 1
+            elif not todo:
+                note = "up to date"; grand["uptodate"] += 1
+            elif avail == 0:
+                note = f"SHORT {len(todo)} - no pending sessions outside SBTE"
+                problems.append((sp.student_id, note)); grand["short"] += 1
+            elif avail < len(todo):
+                note = f"SHORT {len(todo) - avail} - only {avail} pending available"
+                problems.append((sp.student_id, note)); grand["short"] += 1
+                grand["to_mark"] += avail
             else:
-                spread = sorted({planner.term_no(s) for s in chosen} - {None})
-                note = f"T{'+T'.join(map(str, spread))}" if spread else "no term"
+                note = f"T{term_now}" if term_now else "no term"
                 if term_src == "history" and pl.start_term and term_now != pl.start_term:
                     note += f"  (student is in T{term_now}, batch teaches T{pl.start_term})"
                 grand["ok"] += 1
-                grand["to_mark"] += len(chosen)
+                grand["to_mark"] += len(todo)
 
-            print(f"  {sid:<15} {nm:<22} {sp.want:>5} {already:>6} {delta:>5} "
-                  f"{avail:>5}  {note}" + (f"  [{tag}]" if tag else ""))
+            extra = ""
+            if len(recs) > 1 and rec:
+                extra = f"  [{len(recs)} enrollments -> {item.get('CourseName')}]"
+            print(f"  {sid:<15} {nm:<22} {len(want):>5} {len(have):>5} {len(todo):>5} "
+                  f"{avail:>5}  {note}" + (f"  [{tag}]" if tag else "") + extra)
 
         print()
 
     print("=" * 92)
-    print(f"SUMMARY  {grand['to_mark']} sessions to mark | {grand['ok']} students ready | "
+    print(f"SUMMARY  {grand['to_mark']} dates to mark | {grand['ok']} students ready | "
           f"{grand['uptodate']} already up to date | {grand['hold']} held | "
           f"{grand['short']} short | {grand['oddstatus']} with odd enrollment status | "
           f"{grand['over']} over-marked | {grand['error']} errors | "
-          f"{grand['offterm']} not in the batch's term")
+          f"{grand['offterm']} not in the batch's term | {grand['multi']} multi-enrollment")
     if problems:
         print(f"\n{len(problems)} student(s) need attention:")
         for sid, why in problems:
